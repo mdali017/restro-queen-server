@@ -184,12 +184,31 @@ async function run() {
       const insertResult = await paymentCollection.insertOne(payment);
 
       const query = {
-        _id: { $in: payment.cartsItems.map((id) => new ObjectId(id)) },
+        _id: { $in: payment.menuItems.map((id) => new ObjectId(id)) },
       };
       const deletedResult = await cartCollection.deleteMany(query);
 
       res.send({ insertResult, deletedResult });
     });
+
+    // payment-history
+    app.get("/payment", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const query = { email: email };
+      const options = {
+        projection: { date: 1, quantity: 1, price: 1, transactionId: 1 },
+      };
+      // const result = await paymentCollection.find().toArray();
+      const result = await paymentCollection.find(query, options).toArray();
+      res.send(result);
+    });
+    app.delete("/payment/:id", verifyJWT, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await paymentCollection.deleteOne(query);
+      res.send(result);
+    });
+
     // ==================  Users Related API
     app.post("/users", async (req, res) => {
       const user = req.body;
@@ -259,6 +278,58 @@ async function run() {
       const result = { admin: user?.role === "admin" };
       res.send(result);
     });
+
+    // admin stats
+    app.get("/admin-stats", verifyJWT, verifyAdmin, async (req, res) => {
+      const users = await usersCollection.estimatedDocumentCount();
+      const products = await menuCollections.estimatedDocumentCount();
+      const orders = await paymentCollection.estimatedDocumentCount();
+      const payments = await paymentCollection.find().toArray();
+      const revenue = payments.reduce((sum, payment) => sum + payment.price, 0);
+      res.send({
+        users,
+        products,
+        orders,
+        revenue,
+      });
+    });
+
+    // aggregator pipeline
+    app.get("/order-stats", async (req, res) => {
+      const pipeline = [
+        {
+          $lookup: {
+            from: "menu",
+            localField: "menuItems",
+            foreignField: "_id",
+            as: "menuItemsData",
+          },
+        },
+        {
+          $unwind: "$menuItemsData",
+        },
+        {
+          $group: {
+            _id: "$menuItemsData.category",
+            count: { $sum: 1 },
+            total: { $sum: "$menuItemsData.price" },
+          },
+        },
+        {
+          $project: {
+            category: "$_id",
+            count: 1,
+            total: { $round: ["$total", 2] },
+            _id: 0,
+          },
+        },
+      ];
+
+      const result = await paymentCollection.aggregate(pipeline).toArray();
+      res.send(result);
+    });
+
+    // $lookup: The $lookup stage in MongoDB's aggregation pipeline allows for a kind of left outer join between documents from two collections.
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
